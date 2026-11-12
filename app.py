@@ -8,8 +8,7 @@ TIMEFRAME = "15m"
 PAPER_BALANCE = 10.0
 RISK_PCT = 0.10
 
-exchange = ccxt.binance({'enableRateLimit': True})
-
+exchange = ccxt.binanceus({'enableRateLimit': True})
 state = {"status":"starting","balance":PAPER_BALANCE,"price":0,"ema50":0,"ema200":0,"position":None,"total_trades":0,"wins":0,"losses":0,"last_signal":"None","last_update":"Never","logs":[]}
 
 def log(msg):
