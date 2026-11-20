@@ -1,11 +1,11 @@
 import os, time, requests, threading
-from flask import Flask
+from flask import Flask, redirect
 from datetime import datetime, timedelta
 app = Flask(__name__)
 SYMBOL = "BTCUSDT"
-balance = 10.0
-start_balance = 10.0
-day_start_balance = 10.0
+balance = 16.80
+start_balance = 16.80
+day_start_balance = 16.80
 daily_profit = 0.0
 wins = 0
 losses = 0
@@ -32,12 +32,26 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+        return False
     try:
         u = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
-        requests.post(u, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
-    except:
-        pass
+        r = requests.post(u, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+        return r.status_code == 200
+    except Exception as e:
+        log(f"Telegram send fail: {e}")
+        return False
+
+def do_continue():
+    global stopped_today, manual_continue, wins_today, trades_today, loss_streak, day_start_balance, daily_profit
+    stopped_today = False
+    manual_continue = True
+    wins_today = 0
+    trades_today = 0
+    loss_streak = 0
+    day_start_balance = balance
+    daily_profit = 0
+    log("CONTINUE received - Resuming")
+    send_telegram(f"▶️ CONTINUE OK - Resuming 5M FVG\nBalance: ${balance:.2f}")
 
 def log(msg):
     t = datetime.now().strftime("%H:%M:%S")
@@ -47,37 +61,50 @@ def log(msg):
     print(f"{t}: {msg}", flush=True)
 
 def telegram_listener():
-    global telegram_offset, stopped_today, manual_continue, wins_today, day_start_balance, daily_profit, trades_today, loss_streak
+    global telegram_offset
+    # FIX 1: Delete webhook so getUpdates can work
+    if TELEGRAM_TOKEN:
+        try:
+            requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
+            log("Telegram: webhook cleared, now listening")
+        except Exception as e:
+            log(f"Telegram webhook clear fail: {e}")
+    else:
+        log("Telegram: NO TOKEN - listener off")
     while True:
         try:
             if not TELEGRAM_TOKEN:
                 time.sleep(30)
                 continue
             u = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-            r = requests.get(u, params={"offset": telegram_offset, "timeout": 10}, timeout=15)
+            r = requests.get(u, params={"offset": telegram_offset, "timeout": 20}, timeout=25)
             data = r.json()
-            if data.get("ok"):
-                for upd in data.get("result", []):
-                    telegram_offset = upd["update_id"] + 1
-                    msg = upd.get("message", {})
-                    text = msg.get("text", "").lower().strip()
-                    if "continue" in text:
-                        stopped_today = False
-                        manual_continue = True
-                        wins_today = 0
-                        trades_today = 0
-                        loss_streak = 0
-                        day_start_balance = balance
-                        daily_profit = 0
-                        send_telegram(f"▶️ CONTINUE - Resuming 5M FVG\nBalance: ${balance:.2f}")
-                    elif "stop" in text:
-                        stopped_today = True
-                        manual_continue = False
-                        send_telegram("⏸️ STOP - Paused. Send 'continue' to resume")
-                    elif "status" in text:
-                        send_telegram(f"📊 5M FVG\nBalance: ${balance:.2f}\nDaily: ${daily_profit:+.2f}/$6\nWins: {wins_today}/3 Trades: {trades_today}/10\nLoss Streak: {loss_streak}")
-            time.sleep(5)
-        except:
+            if not data.get("ok"):
+                log(f"Telegram getUpdates fail: {data}")
+                time.sleep(10)
+                continue
+            for upd in data.get("result", []):
+                telegram_offset = upd["update_id"] + 1
+                msg = upd.get("message", {}) or upd.get("edited_message", {})
+                text = (msg.get("text", "") or "").lower().strip()
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+                log(f"Telegram got: '{text}' from {chat_id}")
+                # Accept from any chat, not only saved CHAT_ID, to avoid ID mismatch
+                if "continue" in text:
+                    do_continue()
+                elif "stop" in text:
+                    global stopped_today, manual_continue
+                    stopped_today = True
+                    manual_continue = False
+                    log("STOP received")
+                    send_telegram("⏸️ STOP OK - Paused. Send 'continue' to resume")
+                elif "status" in text:
+                    send_telegram(f"📊 5M FVG\nBalance: ${balance:.2f}\nDaily: ${daily_profit:+.2f}/$6\nWins: {wins_today}/3 Trades: {trades_today}/10\nLoss Streak: {loss_streak}")
+                elif text:
+                    send_telegram(f"Got '{text}' - Send 'continue' to resume, 'stop' to pause, 'status' for balance")
+            time.sleep(3)
+        except Exception as e:
+            log(f"Telegram listener error: {e}")
             time.sleep(10)
 
 def get_klines(interval, limit=100):
@@ -120,8 +147,8 @@ def find_fvg(candles):
 
 def bot_loop():
     global balance, wins, losses, trades, wins_today, trades_today, loss_streak, last_day, open_pos, last_signal, pending_fvg, pending_count, stopped_today, manual_continue, day_start_balance, daily_profit, last_price, cooldown_until
-    log("5M FVG started - NO SWEEP - Max 10 trades")
-    send_telegram("🤖 5M FVG Started - NO SWEEP\nFVG + Retest only\nMax 10 trades/day\nAfter 2 losses: rest 15 mins\nTarget: 3 wins + $6")
+    log("5M FVG started - Balance $16.80 - NO SWEEP")
+    send_telegram("🤖 5M FVG Started - Balance $16.80\nFVG + Retest only\nMax 10 trades/day\nAfter 2 losses: rest 15 mins\nTarget: 3 wins + $6")
     while True:
         try:
             today = datetime.now().day
@@ -213,7 +240,7 @@ def bot_loop():
                 time.sleep(15)
                 continue
             if stopped_today and not manual_continue:
-                last_signal = f"🏆 TARGET HIT - Send 'continue' to resume"
+                last_signal = f"🏆 TARGET HIT - Send 'continue' on Telegram"
                 time.sleep(30)
                 continue
             if trades_today >= MAX_TRADES_DAILY:
@@ -262,7 +289,7 @@ def bot_loop():
                     tp = entry - (sl - entry) * 2
                 risk = balance * 0.10
                 sl_dist = abs(entry - sl) / entry
-                if sl_dist == 0 or sl_dist > 0.008:
+                if sl_dist == 0 or sl_dist > 0.012:
                     log("Skip - SL too wide")
                     pending_fvg = None
                     continue
@@ -287,6 +314,11 @@ def bot_loop():
             log(f"Error: {e}")
             time.sleep(15)
 
+@app.route("/continue")
+def continue_route():
+    do_continue()
+    return redirect("/")
+
 @app.route("/")
 def home():
     if open_pos:
@@ -302,8 +334,9 @@ def home():
     if trades > 0:
         winrate = wins / trades * 100
     stop_txt = "🏆 STOPPED - Send 'continue' on Telegram" if stopped_today else "🟢 5M FVG - LIVE"
+    continue_btn = "<a href='/continue' style='display:block;background:#00c853;color:#fff;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold;margin:10px 0'>▶️ CONTINUE - RESUME TRADING</a>" if stopped_today else ""
     logs_html = "<br>".join(logs[-40:])
-    return f"<body style='background:#0f0f0f;color:#fff;font-family:sans-serif;padding:15px'><h2 style='color:#00e5ff'>⚡ 5M FVG - NO SWEEP</h2><p style='color:#ffab00'>{stop_txt} | Loss Streak: {loss_streak}</p><div style='display:flex;gap:10px'><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>BALANCE</small><h2>${balance:.2f}</h2><span style='color:{profit_color}'>Total: ${profit:+.2f}</span><br><span style='color:{daily_color}'>Today: ${daily_profit:+.2f} / $6</span></div><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>WINS TODAY</small><h2>{wins_today}/3 🏆</h2><span style='color:#00c853'>🟢 {wins} Win</span> <span style='color:#ff4444'>🔴 {losses} Loss</span><br>WinRate: {winrate:.0f}% Trades Today: {trades_today}/10</div></div><p>Price ${last_price:.2f} | {last_signal}</p><h3>Open Position</h3>{pos_html}<h3>Logs</h3><div style='background:#1e1e1e;padding:10px;border-radius:10px;font-size:13px'>{logs_html}</div><script>setTimeout(()=>location.reload(),15000)</script></body>"
+    return f"<body style='background:#0f0f0f;color:#fff;font-family:sans-serif;padding:15px'><h2 style='color:#00e5ff'>⚡ 5M FVG - NO SWEEP</h2><p style='color:#ffab00'>{stop_txt} | Loss Streak: {loss_streak}</p>{continue_btn}<div style='display:flex;gap:10px'><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>BALANCE</small><h2>${balance:.2f}</h2><span style='color:{profit_color}'>Total: ${profit:+.2f}</span><br><span style='color:{daily_color}'>Today: ${daily_profit:+.2f} / $6</span></div><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>WINS TODAY</small><h2>{wins_today}/3 🏆</h2><span style='color:#00c853'>🟢 {wins} Win</span> <span style='color:#ff4444'>🔴 {losses} Loss</span><br>WinRate: {winrate:.0f}% Trades Today: {trades_today}/10</div></div><p>Price ${last_price:.2f} | {last_signal}</p><h3>Open Position</h3>{pos_html}<h3>Logs</h3><div style='background:#1e1e1e;padding:10px;border-radius:10px;font-size:13px'>{logs_html}</div><script>setTimeout(()=>location.reload(),15000)</script></body>"
 
 threading.Thread(target=telegram_listener, daemon=True).start()
 threading.Thread(target=bot_loop, daemon=True).start()
