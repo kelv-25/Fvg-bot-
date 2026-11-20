@@ -15,12 +15,11 @@ trades_today = 0
 loss_streak = 0
 last_day = datetime.now().day
 open_pos = None
-last_signal = "Starting QUALITY 5M..."
+last_signal = "Starting 5M FVG..."
 last_price = 0
 logs = []
 pending_fvg = None
 pending_count = 0
-last_sweep = "None yet"
 cooldown_until = None
 MAX_TRADES_DAILY = 10
 MAX_WINS_DAILY = 3
@@ -70,13 +69,13 @@ def telegram_listener():
                         loss_streak = 0
                         day_start_balance = balance
                         daily_profit = 0
-                        send_telegram(f"▶️ CONTINUE - Resuming QUALITY 5M\nBalance: ${balance:.2f}")
+                        send_telegram(f"▶️ CONTINUE - Resuming 5M FVG\nBalance: ${balance:.2f}")
                     elif "stop" in text:
                         stopped_today = True
                         manual_continue = False
                         send_telegram("⏸️ STOP - Paused. Send 'continue' to resume")
                     elif "status" in text:
-                        send_telegram(f"📊 QUALITY 5M\nBalance: ${balance:.2f}\nDaily: ${daily_profit:+.2f}/$6\nWins: {wins_today}/3 Trades: {trades_today}/10\nLoss Streak: {loss_streak}\nLast Sweep: {last_sweep}")
+                        send_telegram(f"📊 5M FVG\nBalance: ${balance:.2f}\nDaily: ${daily_profit:+.2f}/$6\nWins: {wins_today}/3 Trades: {trades_today}/10\nLoss Streak: {loss_streak}")
             time.sleep(5)
         except:
             time.sleep(10)
@@ -119,24 +118,10 @@ def find_fvg(candles):
         return {"type": "BEARISH", "top": a["low"], "bottom": c["high"]}
     return None
 
-def detect_sweep(candles):
-    if len(candles) < 30:
-        return None
-    recent = candles[-30:-5]
-    last_5 = candles[-5:]
-    swing_high = max(c["high"] for c in recent)
-    swing_low = min(c["low"] for c in recent)
-    for c in last_5:
-        if c["high"] > swing_high and c["close"] < swing_high:
-            return {"type": "BEARISH_SWEEP", "wick": c["high"], "level": swing_high}
-        if c["low"] < swing_low and c["close"] > swing_low:
-            return {"type": "BULLISH_SWEEP", "wick": c["low"], "level": swing_low}
-    return None
-
 def bot_loop():
-    global balance, wins, losses, trades, wins_today, trades_today, loss_streak, last_day, open_pos, last_signal, pending_fvg, pending_count, stopped_today, manual_continue, day_start_balance, daily_profit, last_price, last_sweep, cooldown_until
-    log("QUALITY 5M started - Max 10 trades - 15min rest after 2 losses")
-    send_telegram("🤖 QUALITY 5M Started\nSweep MUST + FVG + Retest\nMax 10 trades/day\nAfter 2 losses: rest 15 mins\nTarget: 3 wins + $6")
+    global balance, wins, losses, trades, wins_today, trades_today, loss_streak, last_day, open_pos, last_signal, pending_fvg, pending_count, stopped_today, manual_continue, day_start_balance, daily_profit, last_price, cooldown_until
+    log("5M FVG started - NO SWEEP - Max 10 trades")
+    send_telegram("🤖 5M FVG Started - NO SWEEP\nFVG + Retest only\nMax 10 trades/day\nAfter 2 losses: rest 15 mins\nTarget: 3 wins + $6")
     while True:
         try:
             today = datetime.now().day
@@ -155,14 +140,11 @@ def bot_loop():
             last_price = price
             last_candle = m5[-1]
             daily_profit = balance - day_start_balance
-            sweep_now = detect_sweep(m5)
-            if sweep_now:
-                last_sweep = sweep_now["type"]
             if cooldown_until and datetime.now() < cooldown_until:
                 last_signal = f"⏳ RESTING 15 MINS till {cooldown_until.strftime('%H:%M')} - 2 losses in a row"
                 time.sleep(30)
                 continue
-            last_signal = f"QUALITY 5M - Price ${price:.2f} Sweep: {last_sweep} Wins {wins_today}/3 Daily ${daily_profit:+.2f}/$6 Trades {trades_today}/10"
+            last_signal = f"5M FVG - Price ${price:.2f} Wins {wins_today}/3 Daily ${daily_profit:+.2f}/$6 Trades {trades_today}/10"
             if open_pos:
                 if open_pos["side"] == "BUY":
                     if price >= open_pos["tp"]:
@@ -246,7 +228,6 @@ def bot_loop():
                     time.sleep(15)
                     continue
                 fvg = pending_fvg
-                sweep = pending_fvg.get("sweep")
                 confirmed = False
                 if fvg["type"] == "BULLISH":
                     touched = last_candle["low"] <= fvg["top"]
@@ -267,14 +248,14 @@ def bot_loop():
                 buffer = price * 0.0003
                 if side == "BUY":
                     entry = price
-                    sl = sweep["wick"] - buffer
+                    sl = fvg["bottom"] - buffer
                     if sl >= entry:
                         pending_fvg = None
                         continue
                     tp = entry + (entry - sl) * 2
                 else:
                     entry = price
-                    sl = sweep["wick"] + buffer
+                    sl = fvg["top"] + buffer
                     if sl <= entry:
                         pending_fvg = None
                         continue
@@ -282,13 +263,13 @@ def bot_loop():
                 risk = balance * 0.10
                 sl_dist = abs(entry - sl) / entry
                 if sl_dist == 0 or sl_dist > 0.008:
-                    log("Skip - SL too wide, sweep too far")
+                    log("Skip - SL too wide")
                     pending_fvg = None
                     continue
                 size = risk / sl_dist
                 open_pos = {"side": side, "entry": entry, "sl": sl, "tp": tp, "size": size, "risk": risk}
-                log(f"OPEN {side} @ ${entry:.2f} SL ${sl:.2f} (sweep wick) TP ${tp:.2f}")
-                send_telegram(f"🔴 ENTERED - {side} QUALITY 5M\nEntry: ${entry:.2f}\nSL: ${sl:.2f} (behind sweep)\nTP: ${tp:.2f}\nSweep: {sweep['type']} Wick: ${sweep['wick']:.2f}\nRisk: ${risk:.2f} Win: +${risk*2:.2f}\nWins: {wins_today}/3 Daily: ${daily_profit:+.2f}/$6 Trades: {trades_today}/10")
+                log(f"OPEN {side} @ ${entry:.2f} SL ${sl:.2f} TP ${tp:.2f}")
+                send_telegram(f"🔴 ENTERED - {side} 5M FVG\nEntry: ${entry:.2f}\nSL: ${sl:.2f}\nTP: ${tp:.2f}\nRisk: ${risk:.2f} Win: +${risk*2:.2f}\nWins: {wins_today}/3 Daily: ${daily_profit:+.2f}/$6 Trades: {trades_today}/10")
                 pending_fvg = None
                 pending_count = 0
                 time.sleep(15)
@@ -297,19 +278,10 @@ def bot_loop():
             if not fvg:
                 time.sleep(15)
                 continue
-            if not sweep_now:
-                log("FVG found but NO SWEEP - Skipping for QUALITY")
-                time.sleep(15)
-                continue
-            if sweep_now["type"] == "BULLISH_SWEEP" and fvg["type"] != "BULLISH":
-                continue
-            if sweep_now["type"] == "BEARISH_SWEEP" and fvg["type"] != "BEARISH":
-                continue
-            fvg["sweep"] = sweep_now
             pending_fvg = fvg
             pending_count = 0
-            log(f"SWEEP + FVG {fvg['type']} - Waiting Retest")
-            send_telegram(f"👀 SWEEP + FVG {fvg['type']}\nSweep Wick: ${sweep_now['wick']:.2f}\nWaiting Retest\nPrice: ${price:.2f} Trades: {trades_today}/10")
+            log(f"FVG {fvg['type']} - Waiting Retest")
+            send_telegram(f"👀 FVG {fvg['type']}\nWaiting Retest\nPrice: ${price:.2f} Trades: {trades_today}/10")
             time.sleep(15)
         except Exception as e:
             log(f"Error: {e}")
@@ -319,9 +291,9 @@ def bot_loop():
 def home():
     if open_pos:
         pos_color = "#ff4444" if open_pos["side"] == "SELL" else "#00c853"
-        pos_html = f"<div style='background:{pos_color};padding:12px;border-radius:10px'>🔴 LIVE {open_pos['side']} @ ${open_pos['entry']:.2f}<br>SL ${open_pos['sl']:.2f} (behind sweep) TP ${open_pos['tp']:.2f}<br>Risk ${open_pos['risk']:.2f} Win +${open_pos['risk']*2:.2f}</div>"
+        pos_html = f"<div style='background:{pos_color};padding:12px;border-radius:10px'>🔴 LIVE {open_pos['side']} @ ${open_pos['entry']:.2f}<br>SL ${open_pos['sl']:.2f} TP ${open_pos['tp']:.2f}<br>Risk ${open_pos['risk']:.2f} Win +${open_pos['risk']*2:.2f}</div>"
     else:
-        pend = f"👀 Waiting: {pending_fvg['type']} FVG + Sweep" if pending_fvg else "⚪ Scanning 5M - Waiting Sweep + FVG..."
+        pend = f"👀 Waiting: {pending_fvg['type']} FVG" if pending_fvg else "⚪ Scanning 5M - Waiting FVG..."
         pos_html = f"<div style='background:#2a2a2a;padding:12px;border-radius:10px'>{pend}</div>"
     profit = balance - start_balance
     profit_color = "#00c853" if profit >= 0 else "#ff4444"
@@ -329,9 +301,9 @@ def home():
     winrate = 0
     if trades > 0:
         winrate = wins / trades * 100
-    stop_txt = "🏆 STOPPED - Send 'continue' on Telegram" if stopped_today else "🟢 QUALITY 5M - LIVE"
+    stop_txt = "🏆 STOPPED - Send 'continue' on Telegram" if stopped_today else "🟢 5M FVG - LIVE"
     logs_html = "<br>".join(logs[-40:])
-    return f"<body style='background:#0f0f0f;color:#fff;font-family:sans-serif;padding:15px'><h2 style='color:#00e5ff'>⚡ QUALITY 5M - SWEEP + FVG</h2><p style='color:#ffab00'>{stop_txt} | Last Sweep: {last_sweep} | Loss Streak: {loss_streak}</p><div style='display:flex;gap:10px'><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>BALANCE</small><h2>${balance:.2f}</h2><span style='color:{profit_color}'>Total: ${profit:+.2f}</span><br><span style='color:{daily_color}'>Today: ${daily_profit:+.2f} / $6</span></div><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>WINS TODAY</small><h2>{wins_today}/3 🏆</h2><span style='color:#00c853'>🟢 {wins} Win</span> <span style='color:#ff4444'>🔴 {losses} Loss</span><br>WinRate: {winrate:.0f}% Trades Today: {trades_today}/10</div></div><p>Price ${last_price:.2f} | {last_signal}</p><h3>Open Position</h3>{pos_html}<h3>Logs</h3><div style='background:#1e1e1e;padding:10px;border-radius:10px;font-size:13px'>{logs_html}</div><script>setTimeout(()=>location.reload(),15000)</script></body>"
+    return f"<body style='background:#0f0f0f;color:#fff;font-family:sans-serif;padding:15px'><h2 style='color:#00e5ff'>⚡ 5M FVG - NO SWEEP</h2><p style='color:#ffab00'>{stop_txt} | Loss Streak: {loss_streak}</p><div style='display:flex;gap:10px'><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>BALANCE</small><h2>${balance:.2f}</h2><span style='color:{profit_color}'>Total: ${profit:+.2f}</span><br><span style='color:{daily_color}'>Today: ${daily_profit:+.2f} / $6</span></div><div style='background:#1e1e1e;padding:12px;border-radius:10px;flex:1'><small>WINS TODAY</small><h2>{wins_today}/3 🏆</h2><span style='color:#00c853'>🟢 {wins} Win</span> <span style='color:#ff4444'>🔴 {losses} Loss</span><br>WinRate: {winrate:.0f}% Trades Today: {trades_today}/10</div></div><p>Price ${last_price:.2f} | {last_signal}</p><h3>Open Position</h3>{pos_html}<h3>Logs</h3><div style='background:#1e1e1e;padding:10px;border-radius:10px;font-size:13px'>{logs_html}</div><script>setTimeout(()=>location.reload(),15000)</script></body>"
 
 threading.Thread(target=telegram_listener, daemon=True).start()
 threading.Thread(target=bot_loop, daemon=True).start()
